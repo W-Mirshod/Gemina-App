@@ -1,8 +1,8 @@
-import requests
-import mimetypes
 import os
 import base64
+import mimetypes
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -11,35 +11,14 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable is not set")
 
-
 class GeminiApp:
     def __init__(self):
-        self.API_KEY = API_KEY
-        self.BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+        genai.configure(api_key=API_KEY)
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
 
-    def gemini_request(self, content, prompt, model="gemini-1.5-flash"):
-        url = f"{self.BASE_URL}/{model}:generateContent?key={self.API_KEY}"
-
-        headers = {
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "contents": [{
-                "parts": [
-                    {"text": content},
-                    {"text": prompt}
-                ]
-            }]
-        }
-
-        response = requests.post(url, headers=headers, json=data)
-
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "No response")
-        else:
-            return f"Error: {response.status_code} - {response.text}"
+    def gemini_request(self, content, prompt):
+        response = self.model.generate_content([content, prompt])
+        return response.text
 
     def read_file(self, file_path):
         with open(file_path, 'rb') as file:
@@ -47,42 +26,19 @@ class GeminiApp:
 
     def process_file(self, file_path, prompt):
         file_type = mimetypes.guess_type(file_path)[0]
+        file_content = self.read_file(file_path)
 
         if file_type == 'application/pdf':
-            file_content = self.read_file(file_path)
             base64_content = base64.b64encode(file_content).decode('utf-8')
-
-            url = f"{self.BASE_URL}/gemini-1.5-flash:generateContent?key={self.API_KEY}"
-
-            headers = {
-                "Content-Type": "application/json"
-            }
-
-            data = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inlineData": {
-                                "mimeType": "application/pdf",
-                                "data": base64_content
-                            }
-                        }
-                    ]
-                }]
-            }
-
-            response = requests.post(url, headers=headers, json=data)
-
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text",
-                                                                                                      "No response")
-            else:
-                return f"Error: {response.status_code} - {response.text}"
+            response = self.model.generate_content([
+                prompt,
+                {"mime_type": "application/pdf", "data": base64_content}
+            ])
         else:
-            text = self.read_file(file_path).decode('utf-8')
-            return self.gemini_request(text, prompt)
+            text = file_content.decode('utf-8')
+            response = self.model.generate_content([text, prompt])
+
+        return response.text
 
     def run(self):
         while True:
