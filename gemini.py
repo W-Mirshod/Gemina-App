@@ -30,7 +30,6 @@ class GeminiApp:
         context = ""
 
         for page_number, page_text in enumerate(pages, start=1):
-            # Add start marker
             translated_pages.append(f"---START PAGE {page_number}---")
             
             chunks = self.split_text(page_text)
@@ -44,13 +43,11 @@ class GeminiApp:
                 translated_chunk = self.translate_chunk(request_data)
                 translated_page.append(translated_chunk)
                 
-                # Update context with the last translated chunk
-                context = translated_chunk[-500:]  # Keep last 500 characters as context
+                context = translated_chunk[-500:]
             
             translated_page_text = '\n'.join(translated_page)
             translated_pages.append(translated_page_text)
             
-            # Add end marker
             translated_pages.append(f"---END PAGE {page_number}---")
             
             print(f"Translated page {page_number} of {len(pages)}")
@@ -120,7 +117,7 @@ class GeminiApp:
                     parts = line.split('**')
                     for i, part in enumerate(parts):
                         run = paragraph.add_run(part)
-                        if i % 2 == 1:  # Odd-indexed parts were between ** in the original text
+                        if i % 2 == 1:
                             run.bold = True
                     paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
                     paragraph.style.font.size = Pt(12)
