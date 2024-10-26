@@ -2,11 +2,12 @@ import os
 from dotenv import load_dotenv
 import google.generativeai as genai
 import time
-from google.api_core.exceptions import InternalServerError, DeadlineExceeded
+from google.api_core.exceptions import InternalServerError, DeadlineExceeded, ResourceExhausted
 from PyPDF2 import PdfReader
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+import random
 
 load_dotenv()
 
@@ -19,32 +20,62 @@ class GeminiApp:
     def __init__(self):
         genai.configure(api_key=API_KEY)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        self.default_prompt = "Translate the following text:"
+        self.default_prompt = "Translate the following text, preserving any **bold** markdown formatting, don't add any other text, just the translated the conten:."
 
     def process_file(self, file_path, custom_prompt):
-        text = self.extract_text_from_pdf(file_path)
-        chunks = self.split_text(text)
-        translated_chunks = []
+        pages = self.extract_pages_from_pdf(file_path)
+        translated_pages = []
 
         full_prompt = f"{self.default_prompt} {custom_prompt}"
+        context = ""
 
-        for chunk in chunks:
-            request_data = [full_prompt, chunk]
-            translated_chunk = self.translate_chunk(request_data)
-            translated_chunks.append(translated_chunk)
+        for page_number, page_text in enumerate(pages, start=1):
+            # Add start marker
+            translated_pages.append(f"---START PAGE {page_number}---")
+            
+            chunks = self.split_text(page_text)
+            translated_page = []
+            
+            for chunk in chunks:
+                request_data = [
+                    full_prompt,
+                    f"Previous context: {context}\n\nText to translate: {chunk}"
+                ]
+                translated_chunk = self.translate_chunk(request_data)
+                translated_page.append(translated_chunk)
+                
+                # Update context with the last translated chunk
+                context = translated_chunk[-500:]  # Keep last 500 characters as context
+            
+            translated_page_text = '\n'.join(translated_page)
+            translated_pages.append(translated_page_text)
+            
+            # Add end marker
+            translated_pages.append(f"---END PAGE {page_number}---")
+            
+            print(f"Translated page {page_number} of {len(pages)}")
 
-        result_text = '\n'.join(translated_chunks)
+        result_text = '\n'.join(translated_pages)
         output_docx_path = file_path.replace('.pdf', '_translated.docx')
         self.create_docx(output_docx_path, result_text)
         
         return result_text
 
     def translate_chunk(self, request_data):
-        max_retries = 3
+        max_retries = 5
+        base_delay = 1
         for attempt in range(max_retries):
             try:
                 response = self.model.generate_content(request_data)
                 return response.text
+            except ResourceExhausted as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"Rate limit exceeded. Retrying in {delay:.2f} seconds...")
+                    time.sleep(delay)
+                else:
+                    print("Max retries reached. Please try again later.")
+                    return "Error: Rate limit exceeded. Please try again later."
             except (InternalServerError, DeadlineExceeded) as e:
                 print(f"Attempt {attempt + 1} failed with error: {e}")
                 if attempt < max_retries - 1:
@@ -59,7 +90,7 @@ class GeminiApp:
             text += page.extract_text() + '\n'
         return text
 
-    def split_text(self, text, chunk_size=5000):
+    def split_text(self, text, chunk_size=10000):
         chunks = []
         current_chunk = ""
         for line in text.split('\n'):
@@ -79,10 +110,18 @@ class GeminiApp:
         lines = text.split('\n')
         for line in lines:
             if line.strip():
-                if line == '---PAGE BREAK---':
-                    doc.add_page_break()
-                else:
+                if line.startswith('---START PAGE') or line.startswith('---END PAGE'):
                     paragraph = doc.add_paragraph(line)
+                    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                    paragraph.style.font.bold = True
+                else:
+                    paragraph = doc.add_paragraph()
+                    
+                    parts = line.split('**')
+                    for i, part in enumerate(parts):
+                        run = paragraph.add_run(part)
+                        if i % 2 == 1:  # Odd-indexed parts were between ** in the original text
+                            run.bold = True
                     paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
                     paragraph.style.font.size = Pt(12)
 
@@ -106,6 +145,13 @@ class GeminiApp:
             else:
                 print("Invalid choice. Please try again.")
                 continue
+
+    def extract_pages_from_pdf(self, file_path):
+        reader = PdfReader(file_path)
+        pages = []
+        for page in reader.pages:
+            pages.append(page.extract_text())
+        return pages
 
 if __name__ == "__main__":
     app = GeminiApp()
