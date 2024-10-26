@@ -8,6 +8,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import random
+from google.generativeai.types import HarmCategory, HarmProbability
 
 load_dotenv()
 
@@ -64,6 +65,14 @@ class GeminiApp:
         for attempt in range(max_retries):
             try:
                 response = self.model.generate_content(request_data)
+                
+                if not response.candidates or not response.candidates[0].content.parts:
+                    safety_ratings = response.prompt_feedback.safety_ratings
+                    blocked_categories = [rating.category for rating in safety_ratings if rating.probability != HarmProbability.NEGLIGIBLE]
+                    warning_message = f"Warning: Content blocked due to: {', '.join(blocked_categories)}"
+                    print(warning_message)
+                    return warning_message
+                
                 return response.text
             except ResourceExhausted as e:
                 if attempt < max_retries - 1:
@@ -151,5 +160,6 @@ class GeminiApp:
         return pages
 
 if __name__ == "__main__":
+    print("Starting Gemini App...")
     app = GeminiApp()
     app.run()
