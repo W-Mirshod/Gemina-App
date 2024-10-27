@@ -21,16 +21,16 @@ class GeminiApp:
     def __init__(self):
         genai.configure(api_key=API_KEY)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        self.default_prompt = "Translate the following text, preserving any **bold** markdown formatting, don't add any other text, just the translated the conten:."
+        self.default_prompt = "Translate the following text, preserving any **bold** markdown formatting, don't add any other text, just the translated content:"
 
-    def process_file(self, file_path, custom_prompt):
+    def process_file(self, file_path, custom_prompt, pages_to_translate, target_language):
         pages = self.extract_pages_from_pdf(file_path)
         translated_pages = []
 
-        full_prompt = f"{self.default_prompt} {custom_prompt}"
+        full_prompt = f"{self.default_prompt} {custom_prompt} Translate to {target_language}."
         context = ""
 
-        for page_number, page_text in enumerate(pages, start=1):
+        for page_number, page_text in enumerate(pages[:pages_to_translate], start=1):
             translated_pages.append(f"---START PAGE {page_number}---")
             
             chunks = self.split_text(page_text)
@@ -51,10 +51,10 @@ class GeminiApp:
             
             translated_pages.append(f"---END PAGE {page_number}---")
             
-            print(f"Translated page {page_number} of {len(pages)}")
+            print(f"Translated page {page_number} of {min(pages_to_translate, len(pages))}")
 
         result_text = '\n'.join(translated_pages)
-        output_docx_path = file_path.replace('.pdf', '_translated.docx')
+        output_docx_path = file_path.replace('.pdf', f'_translated_{target_language}.docx')
         self.create_docx(output_docx_path, result_text)
         
         return result_text
@@ -142,11 +142,18 @@ class GeminiApp:
             if choice == '2':
                 file_path = input("Enter the file path: ")
                 try:
-                    custom_prompt = input("Enter the custom prompt for Gemini: ")
-                    result = self.process_file(file_path, custom_prompt)
-                    print("Translation completed and saved to Word document.")
+                    custom_prompt = input("Enter any additional instructions for translation: ")
+                    target_language = input("Enter the target language for translation: ")
+                    pages_to_translate = input("Enter the number of pages to translate (leave blank for all pages): ")
+                    pages_to_translate = int(pages_to_translate) if pages_to_translate.strip() else float('inf')
+                    
+                    result = self.process_file(file_path, custom_prompt, pages_to_translate, target_language)
+                    print(f"Translation completed and saved to Word document: {file_path.replace('.pdf', f'_translated_{target_language}.docx')}")
                 except FileNotFoundError:
                     print(f"Error: File not found at {file_path}")
+                    continue
+                except ValueError as e:
+                    print(f"Error: {e}")
                     continue
             else:
                 print("Invalid choice. Please try again.")
