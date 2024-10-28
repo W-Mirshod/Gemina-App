@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from PyPDF2 import PdfReader, PdfWriter
 from docx import Document
 import os
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 
 
 class FileHandler(ABC):
@@ -22,15 +24,19 @@ class PDFHandler(FileHandler):
             pages.append(page.extract_text())
         return pages
 
-    def save_file(self, file_path, content):
-        writer = PdfWriter()
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        for page_text in content:
-            # Create a new PDF page with the translated text
-            page = writer.add_blank_page(width=612, height=792)  # Standard letter size
-            page.insert_text(12, 720, page_text)  # Basic text insertion
-        with open(file_path, 'wb') as output_file:
-            writer.write(output_file)
+    def save_file(self, file_path, content):        
+        c = canvas.Canvas(file_path, pagesize=letter)
+        pages = content.split('\n\n')
+        
+        for page_text in pages:
+            c.setFont("Helvetica", 12)
+            y = 750
+            for line in page_text.split('\n'):
+                c.drawString(50, y, line)
+                y -= 15
+            c.showPage()
+        
+        c.save()
 
 
 class DOCXHandler(FileHandler):
@@ -50,11 +56,12 @@ class DOCXHandler(FileHandler):
     def save_file(self, file_path, content):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         doc = Document()
-        for page_text in content:
-            paragraphs = page_text.split('\n')
-            for para_text in paragraphs:
-                if para_text.strip():
-                    doc.add_paragraph(para_text)
+        paragraphs = content.split('\n\n')  # Split text into paragraphs
+        
+        for paragraph in paragraphs:
+            if paragraph.strip():
+                doc.add_paragraph(paragraph)
+        
         doc.save(file_path)
 
 

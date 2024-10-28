@@ -6,6 +6,7 @@ from google.generativeai.types import HarmProbability
 from file_handlers import PDFHandler, DOCXHandler, TXTHandler
 import os
 import logging
+from docx import Document
 
 from config import GEMINI_API_KEY
 
@@ -50,9 +51,6 @@ class GeminiTranslator:
             str: Path to the output file
         """
         ext = os.path.splitext(file_path)[1].lower().strip()
-        print(self.handlers)
-        print(ext)
-        print(ext in self.handlers)
         if ext not in self.handlers:
             raise ValueError(f"Unsupported file format: {ext}")
 
@@ -63,16 +61,18 @@ class GeminiTranslator:
             pages = handler.read_file(file_path)
             
             # Translate content
-            translated_pages = self._translate_pages(
+            translated_text = self._translate_pages(
                 pages, 
                 target_language, 
                 pages_to_translate,
                 custom_prompt
             )
             
-            # Save translated content
-            output_path = file_path.replace(ext, f'_translated_{target_language}{ext}')
-            handler.save_file(output_path, translated_pages)
+            # Save translated content as DOCX
+            base_path = os.path.splitext(file_path)[0]
+            output_path = f'{base_path}_translated_{target_language}.docx'
+            docx_handler = DOCXHandler()
+            docx_handler.save_file(output_path, translated_text)
             
             return output_path
             
@@ -81,25 +81,42 @@ class GeminiTranslator:
             raise
 
     def _translate_pages(self, pages, target_language, pages_to_translate, custom_prompt):
-        translated_pages = []
-        prompt = f"Translate the following text to {target_language}. {custom_prompt}"
+        all_translated_text = []  # Store all translated paragraphs
+        prompt = f"Translate the following text to {target_language}. Maintain the original formatting and paragraph structure. {custom_prompt}"
         
         for page_num, page in enumerate(pages[:pages_to_translate], 1):
             self.logger.info(f"Translating page {page_num}")
             
+            # Clean the page text
+            page = ' '.join(str(page).split())  # Convert to string and normalize whitespace
+            if not page:
+                continue
+            
             chunks = self._split_text(page)
-            translated_chunks = []
+            page_translations = []
             
             for chunk in chunks:
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                
                 translated_chunk = self._translate_chunk([prompt, chunk])
-                translated_chunks.append(translated_chunk)
+                if translated_chunk and not translated_chunk.startswith('Error'):
+                    # Ensure we're getting a clean string of text
+                    cleaned_translation = ' '.join(translated_chunk.split())
+                    if cleaned_translation:
+                        page_translations.append(cleaned_translation)
             
-            translated_page = '\n'.join(translated_chunks)
-            translated_pages.append(
-                f"[PAGE {page_num} START]\n{translated_page}\n[PAGE {page_num} END]"
-            )
+            if page_translations:
+                # Join all translations for this page with proper spacing
+                full_page_text = ' '.join(page_translations)
+                # Add page markers
+                marked_page_text = f"[Start Page {page_num}]\n{full_page_text}\n[End Page {page_num}]"
+                all_translated_text.append(marked_page_text)
         
-        return '\n\n'.join(translated_pages)
+        # Join all pages with double newlines and return as a single string
+        final_text = '\n\n'.join(all_translated_text)
+        return final_text
 
     def _translate_chunk(self, request_data):
         max_retries = 5
@@ -132,14 +149,26 @@ class GeminiTranslator:
                     return "Error: The Gemini API is currently unresponsive. Please try again later."
 
     def _split_text(self, text):
+        """Split text into chunks while preserving word boundaries."""
+        MAX_CHUNK_SIZE = 10000
         chunks = []
-        current_chunk = ""
-        for line in text.split('\n'):
-            if len(current_chunk) + len(line) > 10000:
-                chunks.append(current_chunk)
-                current_chunk = line + '\n'
+        words = text.split()
+        current_chunk = []
+        current_length = 0
+        
+        for word in words:
+            word_length = len(word)
+            if current_length + word_length + 1 > MAX_CHUNK_SIZE:
+                if current_chunk:
+                    chunks.append(' '.join(current_chunk))
+                current_chunk = [word]
+                current_length = word_length
             else:
-                current_chunk += line + '\n'
+                current_chunk.append(word)
+                current_length += word_length + 1  # +1 for space
+        
         if current_chunk:
-            chunks.append(current_chunk)
+            chunks.append(' '.join(current_chunk))
+        
         return chunks
+
