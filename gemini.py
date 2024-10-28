@@ -1,65 +1,107 @@
-import os
-from dotenv import load_dotenv
 import google.generativeai as genai
 import time
 from google.api_core.exceptions import InternalServerError, DeadlineExceeded, ResourceExhausted
-from PyPDF2 import PdfReader
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import random
-from google.generativeai.types import HarmCategory, HarmProbability
+from google.generativeai.types import HarmProbability
+from file_handlers import PDFHandler, DOCXHandler, TXTHandler
+import os
+import logging
 
-load_dotenv()
+from config import GEMINI_API_KEY
 
-API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable is not set")
-
-class GeminiApp:
-    def __init__(self):
-        genai.configure(api_key=API_KEY)
+class GeminiTranslator:
+    def __init__(self, api_key=None):
+        self.api_key = api_key or GEMINI_API_KEY
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is required")
+        
+        genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        self.default_prompt = "Translate the following text, preserving any **bold** markdown formatting, don't add any other text, just the translated content:"
+        self._setup_logging()
+        self._setup_handlers()
 
-    def process_file(self, file_path, custom_prompt, pages_to_translate, target_language):
-        pages = self.extract_pages_from_pdf(file_path)
-        translated_pages = []
+    def _setup_logging(self):
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
 
-        full_prompt = f"{self.default_prompt} {custom_prompt} Translate to {target_language}."
-        context = ""
+    def _setup_handlers(self):
+        self.handlers = {
+            '.pdf': PDFHandler(),
+            '.docx': DOCXHandler(),
+            '.doc': DOCXHandler(),
+            '.txt': TXTHandler()
+        }
 
-        for page_number, page_text in enumerate(pages[:pages_to_translate], start=1):
-            translated_pages.append(f"---START PAGE {page_number}---")
+    def translate_file(self, file_path, target_language, pages_to_translate=float('inf'), custom_prompt=""):
+        """
+        Translate a file to the target language.
+        
+        Args:
+            file_path (str): Path to the input file
+            target_language (str): Target language for translation
+            pages_to_translate (int): Number of pages to translate (default: all)
+            custom_prompt (str): Additional translation instructions
             
-            chunks = self.split_text(page_text)
-            translated_page = []
+        Returns:
+            str: Path to the output file
+        """
+        ext = os.path.splitext(file_path)[1].lower().strip()
+        print(self.handlers)
+        print(ext)
+        print(ext in self.handlers)
+        if ext not in self.handlers:
+            raise ValueError(f"Unsupported file format: {ext}")
+
+        handler = self.handlers[ext]
+        
+        try:
+            # Read content
+            pages = handler.read_file(file_path)
+            
+            # Translate content
+            translated_pages = self._translate_pages(
+                pages, 
+                target_language, 
+                pages_to_translate,
+                custom_prompt
+            )
+            
+            # Save translated content
+            output_path = file_path.replace(ext, f'_translated_{target_language}{ext}')
+            handler.save_file(output_path, translated_pages)
+            
+            return output_path
+            
+        except Exception as e:
+            self.logger.error(f"Translation failed: {str(e)}")
+            raise
+
+    def _translate_pages(self, pages, target_language, pages_to_translate, custom_prompt):
+        translated_pages = []
+        prompt = f"Translate the following text to {target_language}. {custom_prompt}"
+        
+        for page_num, page in enumerate(pages[:pages_to_translate], 1):
+            self.logger.info(f"Translating page {page_num}")
+            
+            chunks = self._split_text(page)
+            translated_chunks = []
             
             for chunk in chunks:
-                request_data = [
-                    full_prompt,
-                    f"Previous context: {context}\n\nText to translate: {chunk}"
-                ]
-                translated_chunk = self.translate_chunk(request_data)
-                translated_page.append(translated_chunk)
-                
-                context = translated_chunk[-500:]
+                translated_chunk = self._translate_chunk([prompt, chunk])
+                translated_chunks.append(translated_chunk)
             
-            translated_page_text = '\n'.join(translated_page)
-            translated_pages.append(translated_page_text)
-            
-            translated_pages.append(f"---END PAGE {page_number}---")
-            
-            print(f"Translated page {page_number} of {min(pages_to_translate, len(pages))}")
-
-        result_text = '\n'.join(translated_pages)
-        output_docx_path = file_path.replace('.pdf', f'_translated_{target_language}.docx')
-        self.create_docx(output_docx_path, result_text)
+            translated_page = '\n'.join(translated_chunks)
+            translated_pages.append(
+                f"[PAGE {page_num} START]\n{translated_page}\n[PAGE {page_num} END]"
+            )
         
-        return result_text
+        return '\n\n'.join(translated_pages)
 
-    def translate_chunk(self, request_data):
+    def _translate_chunk(self, request_data):
         max_retries = 5
         base_delay = 1
         for attempt in range(max_retries):
@@ -89,18 +131,11 @@ class GeminiApp:
                 else:
                     return "Error: The Gemini API is currently unresponsive. Please try again later."
 
-    def extract_text_from_pdf(self, file_path):
-        reader = PdfReader(file_path)
-        text = ''
-        for page in reader.pages:
-            text += page.extract_text() + '\n'
-        return text
-
-    def split_text(self, text, chunk_size=10000):
+    def _split_text(self, text):
         chunks = []
         current_chunk = ""
         for line in text.split('\n'):
-            if len(current_chunk) + len(line) > chunk_size:
+            if len(current_chunk) + len(line) > 10000:
                 chunks.append(current_chunk)
                 current_chunk = line + '\n'
             else:
@@ -108,65 +143,3 @@ class GeminiApp:
         if current_chunk:
             chunks.append(current_chunk)
         return chunks
-
-    def create_docx(self, output_path, text):
-        doc = Document()
-        doc.add_heading('Translated Text', level=1)
-
-        lines = text.split('\n')
-        for line in lines:
-            if line.strip():
-                if line.startswith('---START PAGE') or line.startswith('---END PAGE'):
-                    paragraph = doc.add_paragraph(line)
-                    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                    paragraph.style.font.bold = True
-                else:
-                    paragraph = doc.add_paragraph()
-                    
-                    parts = line.split('**')
-                    for i, part in enumerate(parts):
-                        run = paragraph.add_run(part)
-                        if i % 2 == 1:
-                            run.bold = True
-                    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-                    paragraph.style.font.size = Pt(12)
-
-        doc.save(output_path)
-
-    def run(self):
-        while True:
-            choice = input("Enter 1 to input text, 2 to upload a file, or 'quit' to exit: ")
-            if choice.lower() == 'quit':
-                break
-
-            if choice == '2':
-                file_path = input("Enter the file path: ")
-                try:
-                    custom_prompt = input("Enter any additional instructions for translation: ")
-                    target_language = input("Enter the target language for translation: ")
-                    pages_to_translate = input("Enter the number of pages to translate (leave blank for all pages): ")
-                    pages_to_translate = int(pages_to_translate) if pages_to_translate.strip() else float('inf')
-                    
-                    result = self.process_file(file_path, custom_prompt, pages_to_translate, target_language)
-                    print(f"Translation completed and saved to Word document: {file_path.replace('.pdf', f'_translated_{target_language}.docx')}")
-                except FileNotFoundError:
-                    print(f"Error: File not found at {file_path}")
-                    continue
-                except ValueError as e:
-                    print(f"Error: {e}")
-                    continue
-            else:
-                print("Invalid choice. Please try again.")
-                continue
-
-    def extract_pages_from_pdf(self, file_path):
-        reader = PdfReader(file_path)
-        pages = []
-        for page in reader.pages:
-            pages.append(page.extract_text())
-        return pages
-
-if __name__ == "__main__":
-    print("Starting Gemini App...")
-    app = GeminiApp()
-    app.run()
